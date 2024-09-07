@@ -8,6 +8,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import transformers
 from transformers import AutoModel, BertTokenizerFast
+from transformers import AdamW, get_scheduler
+from sklearn.utils.class_weight import compute_class_weight
 
 # specify GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -132,3 +134,50 @@ class BERT_Arch(nn.Module):
     
 model = BERT_Arch(bert)
 model = model.to(device)
+
+optimizer = AdamW(model.parameters(), lr=1e-5)
+class_weights = compute_class_weight('balanced', classes=np.unique(train_y), y=train_y)
+print("Class weights: ", class_weights)
+
+# Convertir les poids en tenseur torch
+weights = torch.tensor(class_weights, dtype=torch.float)
+
+# Calculer sur le GPU si possible
+weights = weights.to(device)
+
+# Définir la fonction de perte avec les poids
+cross_entropy_loss = nn.NLLLoss(weight=weights)
+
+# Nombre d'époques
+epochs = 10
+
+def train():
+    model.train()
+    total_loss, total_accuracy = 0, 0
+    
+    total_predictions = []
+    
+    for step, batch in enumerate(train_dataloader):
+        if step % 50 == 0 and not step == 0: 
+            print('  Batch {:>5,}  of  {:>5,}.'.format(step, len(train_dataloader)))
+            
+    # Lancer sur le GPU si possible
+    batch = [r.to(device) for r in batch]
+    sent_id, mask, labels = batch
+    
+    model.zero_grad()
+    
+    # Forward pass
+    predictions = model(sent_id, mask)
+    
+    # Calculer la perte
+    loss = cross_entropy_loss(predictions, labels)
+    
+    # Accumuler les pertes et les prédictions
+    total_loss += loss.item()
+     
+    # backward pass
+    loss.backward()
+    
+    # cli
+    
