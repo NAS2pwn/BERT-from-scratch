@@ -87,6 +87,8 @@ test_seq = torch.tensor(tokens_test['input_ids'])
 test_mask = torch.tensor(tokens_test['attention_mask'])
 test_y = torch.tensor(test_labels.tolist())
 
+
+
 print(train_seq.shape)
 print(train_mask.shape)
 print(train_y.shape)
@@ -136,7 +138,7 @@ model = BERT_Arch(bert)
 model = model.to(device)
 
 optimizer = AdamW(model.parameters(), lr=1e-5)
-class_weights = compute_class_weight('balanced', classes=np.unique(train_y), y=train_y)
+class_weights = compute_class_weight('balanced', classes=np.unique(train_labels), y=train_labels)
 print("Class weights: ", class_weights)
 
 # Convertir les poids en tenseur torch
@@ -161,23 +163,114 @@ def train():
         if step % 50 == 0 and not step == 0: 
             print('  Batch {:>5,}  of  {:>5,}.'.format(step, len(train_dataloader)))
             
-    # Lancer sur le GPU si possible
-    batch = [r.to(device) for r in batch]
-    sent_id, mask, labels = batch
+        # Lancer sur le GPU si possible
+        batch = [r.to(device) for r in batch]
+        sent_id, mask, labels = batch
+        
+        model.zero_grad()
+        
+        # Forward pass
+        predictions = model(sent_id, mask)
+        
+        # Calculer la perte
+        loss = cross_entropy_loss(predictions, labels)
+        
+        # Accumuler les pertes et les prédictions
+        total_loss += loss.item()
+        
+        # backward pass
+        loss.backward()
+        
+        # vesqui l'exploding gradient
+        nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        # mettre à jour les paramètres
+        optimizer.step()
+        
+        # Si sur le GPU, pousser sur le CPU
+        predictions = predictions.detach().cpu().numpy()
+            
     
-    model.zero_grad()
+    # Ajouter les prédictions à la liste
+    total_predictions.append(predictions)
     
-    # Forward pass
-    predictions = model(sent_id, mask)
+    # Calculer la perte moyenne
+    avg_loss = total_loss / len(train_dataloader)
     
-    # Calculer la perte
-    loss = cross_entropy_loss(predictions, labels)
+    # Calculer la précision
+    total_predictions = np.concatenate(total_predictions, axis=0)
     
-    # Accumuler les pertes et les prédictions
-    total_loss += loss.item()
-     
-    # backward pass
-    loss.backward()
+    return avg_loss, total_predictions
     
-    # cli
+def evaluate():
+    # Désactiver le dropout
+    model.eval()
     
+    total_loss, total_accuracy = 0, 0
+    
+    total_predictions = []
+    
+    for step, batch in enumerate(val_dataloader):
+        if step % 50 == 0 and not step == 0:
+            print('  Batch {:>5,}  of  {:>5,}.'.format(step, len(val_dataloader)))
+            
+        batch = [r.to(device) for r in batch]
+        sent_id, mask, labels = batch
+        
+        with torch.no_grad():
+            predictions = model(sent_id, mask)
+            
+            loss = cross_entropy_loss(predictions, labels)
+            
+            total_loss += loss.item()
+            
+            if device == 'cuda':
+                predictions = predictions.detach().cpu().numpy()
+                
+            total_predictions.append(predictions)
+        
+    avg_loss = total_loss / len(val_dataloader)
+    
+    total_predictions = np.concatenate(total_predictions, axis=0)
+    
+    return avg_loss, total_predictions
+
+# Initialiser la perte (à l'infini)
+best_valid_loss = float('inf')
+
+epochs = 1
+
+# Initialiser les variables pour la perte à chaque époque
+train_losses = []
+valid_losses = []
+    
+for epoch in range(epochs):
+    print('\n Epoch {:} / {:}'.format(epoch + 1, epochs))
+    print('-' * 10)
+    
+    train_loss, _ = train()
+    valid_loss, _ = evaluate()
+    
+    if valid_loss < best_valid_loss:
+        best_valid_loss = valid_loss
+        
+        torch.save(model.state_dict(), f'saved_weights.pt')
+    
+    train_losses.append(train_loss)
+    valid_losses.append(valid_loss)
+    
+    print(f'Train Loss: {train_loss:.4f} \nValidation Loss: {valid_loss:.4f}')
+
+path = 'saved_weights.pt'
+model.load_state_dict(torch.load(path))
+
+# get predictions for test data
+with torch.no_grad():
+    predictions = model(test_seq.to(device), test_mask.to(device))
+    predictions = predictions.detach().cpu().numpy()
+
+print(predictions)
+
+# model's performance
+predictions = np.argmax(predictions, axis = 1)
+print(classification_report(test_y, predictions))
